@@ -53,6 +53,7 @@ import {
   projectSharedMetaReducer,
   tagSharedMetaReducer,
   taskSharedCrudMetaReducer,
+  taskBatchUpdateMetaReducer,
   taskSharedLifecycleMetaReducer,
   taskSharedSchedulingMetaReducer,
 } from './app/root-store/meta/task-shared-meta-reducers';
@@ -110,6 +111,7 @@ bootstrapApplication(AppComponent, {
         metaReducers: [
           undoTaskDeleteMetaReducer,
           taskSharedCrudMetaReducer,
+          taskBatchUpdateMetaReducer,
           taskSharedLifecycleMetaReducer,
           taskSharedSchedulingMetaReducer,
           projectSharedMetaReducer,

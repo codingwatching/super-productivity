@@ -92,7 +92,7 @@ export class PluginService implements OnDestroy {
   private async _discoverBuiltInPlugins(): Promise<void> {
     const pluginPaths = [
       'assets/bundled-plugins/yesterday-tasks-plugin',
-      // 'assets/sync-md-plugin', // Disabled - not ready for prime time
+      'assets/bundled-plugins/sync-md',
       'assets/bundled-plugins/api-test-plugin',
       'assets/bundled-plugins/procrastination-buster',
     ];
@@ -148,7 +148,7 @@ export class PluginService implements OnDestroy {
   private async _loadBuiltInPlugins(): Promise<void> {
     const pluginPaths = [
       'assets/bundled-plugins/yesterday-tasks-plugin',
-      // 'assets/sync-md-plugin', // Disabled - not ready for prime time
+      'assets/bundled-plugins/sync-md',
       'assets/bundled-plugins/api-test-plugin',
       'assets/bundled-plugins/procrastination-buster',
     ];
@@ -224,8 +224,12 @@ export class PluginService implements OnDestroy {
 
   /**
    * Activate a plugin (load it if not already loaded)
+   * @param isManualActivation - true when user manually enables plugin, false on startup
    */
-  async activatePlugin(pluginId: string): Promise<PluginInstance | null> {
+  async activatePlugin(
+    pluginId: string,
+    isManualActivation: boolean = false,
+  ): Promise<PluginInstance | null> {
     const state = this._pluginStates.get(pluginId);
     if (!state) {
       PluginLog.err(`Plugin ${pluginId} not found`);
@@ -252,6 +256,28 @@ export class PluginService implements OnDestroy {
 
       const updatedState = this._pluginStates.get(pluginId);
       return updatedState?.instance || null;
+    }
+
+    // Only check for permission if plugin is actually enabled
+    if (state.isEnabled) {
+      // Only check permission on startup - manual activation already checked in UI
+      if (!isManualActivation) {
+        const hasConsent = await this._checkNodeExecutionPermissionForStartup(
+          state.manifest,
+        );
+        if (!hasConsent) {
+          console.log(
+            'Plugin requires Node.js execution permission but no stored consent found:',
+            state.manifest.id,
+          );
+          // Don't disable the plugin on startup - user may have enabled it but not granted permission yet
+          return null;
+        }
+      }
+    } else {
+      // Plugin is not enabled, don't activate it
+      console.log(`Plugin ${pluginId} is not enabled, skipping activation`);
+      return null;
     }
 
     // Load the plugin
@@ -408,15 +434,8 @@ export class PluginService implements OnDestroy {
           return placeholderInstance;
         }
 
-        // Only check for consent if plugin is enabled
-        if (isPluginEnabled) {
-          const hasConsent = await this._getNodeExecutionConsent(manifest);
-          if (!hasConsent) {
-            throw new Error(
-              this._translateService.instant(T.PLUGINS.USER_DECLINED_NODE_PERMISSION),
-            );
-          }
-        }
+        // Skip consent check during startup - will be checked when plugin is activated
+        // This prevents showing multiple dialogs at once during app startup
       }
 
       // Analyze plugin code (informational only - KISS approach)
@@ -1230,21 +1249,46 @@ export class PluginService implements OnDestroy {
   }
 
   /**
+   * Check node execution permission on startup (uses stored consent)
+   */
+  private async _checkNodeExecutionPermissionForStartup(
+    manifest: PluginManifest,
+  ): Promise<boolean> {
+    // Check if plugin has nodeExecution permission
+    if (!manifest.permissions?.includes('nodeExecution')) {
+      return true; // No node execution permission needed
+    }
+
+    // Only check consent in Electron environment
+    if (!IS_ELECTRON) {
+      console.warn(
+        `Plugin ${manifest.id} requires nodeExecution permission which is not available in web environment`,
+      );
+      return false;
+    }
+
+    // On startup, use stored consent if available
+    const storedConsent =
+      await this._pluginMetaPersistenceService.getNodeExecutionConsent(manifest.id);
+
+    // Only allow if consent was explicitly granted and stored
+    return storedConsent === true;
+  }
+
+  /**
    * Get consent for Node.js execution permissions (KISS approach)
    */
   private async _getNodeExecutionConsent(manifest: PluginManifest): Promise<boolean> {
-    // Check if consent was already given and stored
-    const storedConsent =
+    // Check if we should pre-check the "remember" checkbox based on previous consent
+    const previousConsent =
       await this._pluginMetaPersistenceService.getNodeExecutionConsent(manifest.id);
-    if (storedConsent === true) {
-      return true;
-    }
 
-    // Single, simple consent dialog
+    // Always show dialog for nodeExecution permission
     const result = await this._dialog
       .open(PluginNodeConsentDialogComponent, {
         data: {
           manifest,
+          rememberChoice: previousConsent === true, // Pre-check if previously consented
         } as PluginNodeConsentDialogData,
         disableClose: false,
         width: '500px',
@@ -1260,9 +1304,19 @@ export class PluginService implements OnDestroy {
         setTimeout(() => {
           this._pluginMetaPersistenceService.setNodeExecutionConsent(manifest.id, true);
         }, 5000);
+      } else {
+        // User unchecked remember - remove stored consent
+        setTimeout(() => {
+          this._pluginMetaPersistenceService.setNodeExecutionConsent(manifest.id, false);
+        }, 5000);
       }
       return true;
     }
+
+    // User denied permission - remove any stored consent
+    setTimeout(() => {
+      this._pluginMetaPersistenceService.setNodeExecutionConsent(manifest.id, false);
+    }, 5000);
 
     return false;
   }
